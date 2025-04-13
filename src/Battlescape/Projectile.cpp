@@ -385,6 +385,9 @@ void Projectile::applyAccuracy(Position origin, Position *target, double accurac
 
 	int deviation = RNG::generate(0, 100) - (accuracy * 100);
 
+	double targetDist2D = sqrt(xDist * xDist + yDist * yDist);
+	if (Options::battleAlternativeSpread && targetDist2D <= 16) deviation -= 10; // Correction for alternative algorithm
+
 	if (deviation >= 0)
 		deviation += 50;				// add extra spread to "miss" cloud
 	else
@@ -392,8 +395,66 @@ void Projectile::applyAccuracy(Position origin, Position *target, double accurac
 
 	deviation = std::max(1, zShift * deviation / 200);	//range ratio
 
-	target->x += RNG::generate(0, deviation) - deviation / 2;
-	target->y += RNG::generate(0, deviation) - deviation / 2;
+    if (Options::battleAlternativeSpread)
+    {
+        // First, new target point is rolled as usual. Then, if it lies outside of outer circle (in square's corner)
+        // it's rerolled inside inner circle
+
+        const double OVERALL_SPREAD_COEFF = 0.8; // Overall spread diameter change compared to vanilla
+        const double INNER_SPREAD_COEFF = 0.6; // Inner spread circle diameter compared to outer
+
+        bool resultShifted = false;
+        bool innerHit = false; // for probabilities correction
+        int dX, dY;
+
+        for (int i = 0; i < 10; ++i) // Break from this cycle when proper target is found
+        {
+            dX = RNG::generate(0, deviation) - deviation / 2;
+            dY = RNG::generate(0, deviation) - deviation / 2;
+
+            int radiusSq = dX*dX + dY*dY;
+
+            double exprX = target->x + dX - origin.x;
+            double exprY = target->y + dY - origin.y;
+            double deviateDist2D = sqrt(exprX * exprX + exprY * exprY); // Distance from origin to deviation point
+
+            if (resultShifted && innerHit) // Additional hit to correct probabilities
+            {
+                dX = 0;
+                dY = 0;
+                break;
+            }
+
+            if (resultShifted && !innerHit &&     // point is on inner ring and should be a "miss"
+                radiusSq > 16 &&                  // outside of the target with R = 4
+                deviateDist2D > targetDist2D-2 && // ...and lies to the left or right of the target (not on front of it or behind)
+                deviateDist2D < targetDist2D+2)
+                    break;
+
+            if (resultShifted) deviation = std::max(8, deviation); // We hit the target, increasing innermost circle to R = 4
+
+            if (!resultShifted) // This is the FIRST roll!
+            {
+                int deviateRadius = OVERALL_SPREAD_COEFF * deviation / 2;
+                int deviateRadiusSq = deviateRadius * deviateRadius;
+                if (radiusSq <= deviateRadiusSq) break;  // If we inside of outer circle - we're done!
+
+                resultShifted = true;
+                deviation *= INNER_SPREAD_COEFF; // Next attempts will be closer to target
+
+                if (RNG::generate(0, deviation) < 2) innerHit = true; // 2/deviation additional chance to hit
+            }
+        }
+        target->x += dX;
+        target->y += dY;
+    }
+
+    else // Classic shooting spread
+    {
+        target->x += RNG::generate(0, deviation) - deviation / 2;
+        target->y += RNG::generate(0, deviation) - deviation / 2;
+    }
+
 	target->z += RNG::generate(0, deviation / 2) / 2 - deviation / 8;
 
 	if (extendLine)
